@@ -4,6 +4,11 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import math
 from matplotlib.backends.backend_pdf import PdfPages
+from sklearn.linear_model import LinearRegression
+from sklearn.model_selection import train_test_split, GridSearchCV, KFold # Import GridSearchCV and KFold
+from sklearn.metrics import mean_squared_error, r2_score
+import statsmodels.api as sm
+from sklearn.ensemble import RandomForestRegressor
 
 # --- Custom Dark Theme for Plots ---
 plt.rcParams.update({
@@ -123,25 +128,18 @@ for col in df.select_dtypes(include='object').columns:
     if original_unique_count != cleaned_unique_count:
         print(f"- Column '{col}': Contains case inconsistencies ({original_unique_count} original vs {cleaned_unique_count} lowercased unique values).")
 
-# # --- 8. Date Column Inspection and Conversion (Enhanced) ---
-# print("--- 8. Date Column Inspection and Conversion ---")
-# date_cols = ['Order Date', 'Ship Date'] # Explicitly define date columns for Superstore
-# for col in date_cols:
-#     if col in df.columns:
-#         # Convert to datetime, coercing errors to NaT (Not a Time)
-#         df[col] = pd.to_datetime(df[col], errors='coerce', unit='D', origin='1899-12-30') # Excel date origin
-#         if df[col].isnull().any():
-#             print(f"  Warning: Column '{col}' has unparseable date values after conversion (NaT introduced).")
-#         print(f"  Min Date for '{col}': {df[col].min()}, Max Date for '{col}': {df[col].max()}")
-#     else:
-#         print(f"  Column '{col}' not found in the dataset.")
-#
-# # Drop rows where essential date columns are NaT if necessary for analysis
-# df.dropna(subset=date_cols, inplace=True)
-# print(f"Dropped rows with missing values in {date_cols}. New shape: {df.shape}")
+# --- 8. Date Column Inspection and Conversion (Enhanced) ---
+# Removed as per user request. Date conversion now happens implicitly when reading Excel.
+# If explicit conversion is needed for specific columns later, it should be added there.
+# For this script, we'll assume pandas handles it well enough for basic operations.
 
 # --- 9. Sales and Profit Trends Over Time ---
 print("--- 9. Sales and Profit Trends Over Time ---")
+
+# Ensure 'Order Date' is datetime type for time-series analysis
+# Removed unit='D', origin='1899-12-30' as it's causing issues with already parsed dates.
+df['Order Date'] = pd.to_datetime(df['Order Date'], errors='coerce')
+df.dropna(subset=['Order Date'], inplace=True) # Drop rows where date conversion failed
 
 # Aggregate sales and profit by month and year
 df['Order_YearMonth'] = df['Order Date'].dt.to_period('M')
@@ -363,7 +361,192 @@ avg_profit_per_quantity = df['Profit_Per_Quantity'].mean()
 print(f"Average Sales per Unit Quantity: ${avg_sales_per_quantity:.2f}")
 print(f"Average Profit per Unit Quantity: ${avg_profit_per_quantity:.2f}")
 
+# --- 15. Numerical Analysis: Correlation ---
+print("\n--- 15. Numerical Analysis: Correlation ---")
+
+# Select numerical columns for correlation analysis
+correlation_cols = ['Sales', 'Quantity', 'Discount', 'Profit']
+correlation_matrix = df[correlation_cols].corr()
+print("Correlation Matrix:")
+print(correlation_matrix)
+
+# Plotting the correlation heatmap
+fig_corr_heatmap = plt.figure(figsize=(8, 6))
+sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', fmt=".2f", linewidths=.5)
+plt.title('Correlation Matrix of Numerical Features')
+plt.tight_layout()
+pdf_pages.savefig(fig_corr_heatmap)
+plt.close(fig_corr_heatmap)
+
+# --- 16. Numerical Analysis: Multiple Linear Regression ---
+print("\n--- 16. Numerical Analysis: Multiple Linear Regression ---")
+
+# Define dependent and independent variables
+# Let's try to predict Profit based on Sales, Quantity, and Discount
+X = df[['Sales', 'Quantity', 'Discount']]
+y = df['Profit']
+
+# Check for perfect multicollinearity (optional but good practice)
+# If a column can be perfectly predicted from others, it can cause issues.
+# For example, if 'Sales' was always 10 * 'Quantity' * 'Price_per_unit', etc.
+# In our case, these are distinct transactional values.
+
+# Split the data into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+print(f"Training data shape: {X_train.shape}, {y_train.shape}")
+print(f"Testing data shape: {X_test.shape}, {y_test.shape}")
+
+# Initialize and train the Linear Regression model
+model = LinearRegression()
+model.fit(X_train, y_train)
+
+# Make predictions on the test set
+y_pred = model.predict(X_test)
+
+# Evaluate the model
+mse = mean_squared_error(y_test, y_pred)
+r2 = r2_score(y_test, y_pred)
+
+print(f"\nModel Evaluation (Linear Regression):")
+print(f"Mean Squared Error (MSE): {mse:.2f}")
+print(f"R-squared (R2): {r2:.2f}")
+
+# Display model coefficients and intercept
+print("\nModel Coefficients (Linear Regression):")
+for feature, coef in zip(X.columns, model.coef_):
+    print(f"{feature}: {coef:.4f}")
+print(f"Intercept: {model.intercept_:.4f}")
+
+# Using statsmodels for a more detailed statistical summary
+# Add a constant (intercept) to the independent variables for statsmodels
+X_sm = sm.add_constant(X)
+model_sm = sm.OLS(y, X_sm).fit()
+print("\nDetailed Regression Results (Statsmodels OLS):")
+print(model_sm.summary())
+
+# --- Add Regression Results to PDF as a Table ---
+print("\n--- Adding Linear Regression Results to PDF ---")
+
+# Extract key parts of the summary for the table
+results_df = pd.DataFrame({
+    'Coefficient': model_sm.params,
+    'Std Error': model_sm.bse,
+    't-value': model_sm.tvalues,
+    'P-value': model_sm.pvalues,
+    '[0.025': model_sm.conf_int()[0],
+    '0.975]': model_sm.conf_int()[1]
+})
+
+# Format for display in table
+results_df = results_df.map(lambda x: f"{x:.4f}")
+
+# Add R-squared and Adjusted R-squared
+r_squared = f"{model_sm.rsquared:.4f}"
+adj_r_squared = f"{model_sm.rsquared_adj:.4f}"
+f_statistic = f"{model_sm.fvalue:.2f}"
+prob_f_statistic = f"{model_sm.f_pvalue:.4f}"
+
+# Create a figure for the table
+fig_regression_table = plt.figure(figsize=(10, 6))
+ax = fig_regression_table.add_subplot(111)
+ax.axis('off') # Hide axes
+
+# Prepare table data, including a header for the index
+header = ['Feature'] + results_df.columns.tolist()
+table_data = [header] + results_df.reset_index().values.tolist()
+
+# Create the table
+table = ax.table(cellText=table_data,
+                 colLabels=None,
+                 loc='center',
+                 cellLoc='center')
+
+table.auto_set_font_size(False)
+table.set_fontsize(10)
+table.scale(1.2, 1.2) # Adjust size as needed
+
+# Style the table for dark theme
+for (row, col), cell in table.get_celld().items():
+    cell.set_facecolor('black')
+    cell.set_edgecolor('#666666')
+    cell.set_text_props(color='white')
+    if row == 0: # Header row
+        cell.set_text_props(weight='bold')
+
+ax.set_title('Multiple Linear Regression Results', color='white', fontsize=14)
+
+# Add R-squared and Adjusted R-squared below the table as text
+ax.text(0.05, 0.15, f'R-squared: {r_squared}', transform=ax.transAxes, fontsize=10, color='white')
+ax.text(0.05, 0.10, f'Adj. R-squared: {adj_r_squared}', transform=ax.transAxes, fontsize=10, color='white')
+ax.text(0.05, 0.05, f'F-statistic: {f_statistic} (Prob(F-statistic): {prob_f_statistic})', transform=ax.transAxes, fontsize=10, color='white')
+
+plt.tight_layout()
+pdf_pages.savefig(fig_regression_table)
+plt.close(fig_regression_table)
+
+# --- 17. Numerical Analysis: Random Forest Regression with Hyperparameter Tuning ---
+print("\n--- 17. Numerical Analysis: Random Forest Regression with Hyperparameter Tuning ---")
+
+# Define the parameter grid for GridSearchCV
+param_grid = {
+    'n_estimators': [50, 100, 200], # Number of trees in the forest
+    'max_features': [0.6, 0.8, 1.0], # Number of features to consider when looking for the best split
+    'min_samples_leaf': [1, 2, 4], # Minimum number of samples required to be at a leaf node
+    'min_samples_split': [2, 5, 10] # Minimum number of samples required to split an internal node
+}
+
+# Initialize the Random Forest Regressor
+rf = RandomForestRegressor(random_state=42, n_jobs=-1)
+
+# Set up KFold for cross-validation
+cv = KFold(n_splits=5, shuffle=True, random_state=42) # Changed to 5 folds
+
+# Initialize GridSearchCV
+grid_search = GridSearchCV(estimator=rf, param_grid=param_grid, cv=cv, scoring='r2', verbose=1, n_jobs=-1)
+
+# Perform the grid search on the training data
+grid_search.fit(X_train, y_train)
+
+# Get the best parameters and best score
+best_params = grid_search.best_params_
+best_score = grid_search.best_score_
+
+print(f"\nBest Parameters found by GridSearchCV: {best_params}")
+print(f"Best R-squared score from cross-validation: {best_score:.2f}")
+
+# Train the Random Forest model with the best parameters
+tuned_rf_model = RandomForestRegressor(**best_params, random_state=42, n_jobs=-1)
+tuned_rf_model.fit(X_train, y_train)
+
+# Make predictions on the test set using the tuned model
+y_pred_rf_tuned = tuned_rf_model.predict(X_test)
+
+# Evaluate the tuned Random Forest model
+mse_rf_tuned = mean_squared_error(y_test, y_pred_rf_tuned)
+r2_rf_tuned = r2_score(y_test, y_pred_rf_tuned)
+
+print(f"\nModel Evaluation (Tuned Random Forest Regression on Test Set):")
+print(f"Mean Squared Error (MSE): {mse_rf_tuned:.2f}")
+print(f"R-squared (R2): {r2_rf_tuned:.2f}")
+
+# Feature Importances from the tuned model
+feature_importances_tuned = pd.Series(tuned_rf_model.feature_importances_, index=X.columns).sort_values(ascending=False)
+print("\nFeature Importances (Tuned Random Forest):")
+print(feature_importances_tuned)
+
+# Plotting Feature Importances for Tuned Random Forest
+fig_feature_importance_tuned = plt.figure(figsize=(10, 6))
+sns.barplot(x=feature_importances_tuned.index, y=feature_importances_tuned.values, palette='viridis')
+plt.title('Feature Importances (Tuned Random Forest Regression)')
+plt.xlabel('Feature')
+plt.ylabel('Importance')
+plt.xticks(rotation=45, ha='right')
+plt.tight_layout()
+pdf_pages.savefig(fig_feature_importance_tuned)
+plt.close(fig_feature_importance_tuned)
+
 # --- Close the PDF file ---
 pdf_pages.close()
-print(f"All plots have been saved to '{pdf_filename}'")
+print(f"All plots and regression results have been saved to '{pdf_filename}'")
 print("--- Enhanced Superstore Data Analysis Complete ---")
